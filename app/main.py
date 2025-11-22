@@ -21,6 +21,18 @@ DEVICE = 0 if torch.cuda.is_available() else -1
 #  ----------------->
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+TEXT_MASTER_DIR = (
+    BASE_DIR
+    / "models"
+    / (
+        "emotion_es_master_3c"
+        if os.getenv("REDUCE_TO_3", "0") == "1"
+        else "emotion_es_master_5c"
+    )
+)
+AUDIO_MASTER_DIR = BASE_DIR / "models" / "audio_emotion_master"
+
+
 FT_EMOTION_MODEL_PATH = os.getenv(
     "FT_EMOTION_MODEL_PATH", str(BASE_DIR / "models" / "emotion_es_bert_colombia")
 )
@@ -39,6 +51,38 @@ else:
     emotion_es_ft = None
 
 #  ----------------->
+
+
+#  =====================>
+# Carga texto master
+if TEXT_MASTER_DIR.is_dir():
+    print(f"Cargando modelo MASTER de emociones (texto) desde: {TEXT_MASTER_DIR}")
+    emotion_es_master = pipeline(
+        "text-classification",
+        model=str(TEXT_MASTER_DIR),
+        tokenizer=str(TEXT_MASTER_DIR),
+        return_all_scores=True,
+        device=DEVICE,
+    )
+else:
+    print("⚠️  Modelo MASTER texto ES no encontrado.")
+    emotion_es_master = None
+
+# Carga audio master
+if AUDIO_MASTER_DIR.is_dir():
+    print(f"Cargando modelo MASTER de emociones (audio) desde: {AUDIO_MASTER_DIR}")
+    audio_emotion_master = pipeline(
+        "audio-classification",
+        model=str(AUDIO_MASTER_DIR),
+        feature_extractor=str(AUDIO_MASTER_DIR),
+        device=DEVICE,
+        top_k=None,
+    )
+else:
+    print("⚠️  Modelo MASTER audio no encontrado.")
+    audio_emotion_master = None
+
+#  <=====================
 
 
 app = FastAPI(
@@ -514,5 +558,81 @@ async def transcribe_emotion_es_ft(file: UploadFile = File(...)):
             status_code=500,
             detail=f"Error en emociones (ES fine-tuned): {str(e)}",
         )
+    finally:
+        delete_temp_file(tmp_path)
+
+
+@app.post("/transcribe/emotion-es-master")
+async def transcribe_emotion_es_master(file: UploadFile = File(...)):
+    if emotion_es_master is None:
+        raise HTTPException(
+            status_code=500, detail="Modelo MASTER texto ES no disponible."
+        )
+    ensure_audio(file)
+    tmp_path = save_temp_file(file, suffix=".wav")
+    try:
+        result = asr_model.transcribe(tmp_path, language="es")
+        text = result.get("text", "").strip()
+        segments = result.get("segments", [])
+
+        segment_emotions, global_scores, total_weight = [], defaultdict(float), 0.0
+        for s in segments:
+            seg_text = s.get("text", "").strip()
+            if not seg_text:
+                continue
+            em_result = emotion_es_master(seg_text, top_k=None)
+            emotions = [
+                {"label": d["label"], "score": float(d["score"])} for d in em_result
+            ]
+            start, end = float(s.get("start", 0.0)), float(s.get("end", 0.0))
+            dur = max(end - start, 0.1)
+            total_weight += dur
+            for item in emotions:
+                global_scores[item["label"]] += item["score"] * dur
+            segment_emotions.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": seg_text,
+                    "top_emotion": max(emotions, key=lambda x: x["score"]),
+                    "emotions": emotions,
+                }
+            )
+        global_emotions = (
+            [
+                {"label": k, "score": float(v / total_weight)}
+                for k, v in global_scores.items()
+            ]
+            if total_weight > 0
+            else []
+        )
+        global_emotions.sort(key=lambda x: x["score"], reverse=True)
+        return {
+            "transcription": text,
+            "global_emotions": global_emotions,
+            "top_global_emotions": global_emotions[:3],
+            "segments": segment_emotions,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MASTER texto ES error: {str(e)}")
+    finally:
+        delete_temp_file(tmp_path)
+
+
+@app.post("/audio-emotions/master")
+async def audio_emotions_master_ep(file: UploadFile = File(...)):
+    if audio_emotion_master is None:
+        raise HTTPException(
+            status_code=500, detail="Modelo MASTER audio no disponible."
+        )
+    ensure_audio(file)
+    tmp_path = save_temp_file(file, suffix=".wav")
+    try:
+        results = audio_emotion_master(tmp_path)
+        emotions = [{"label": r["label"], "score": float(r["score"])} for r in results]
+        emotions.sort(key=lambda x: x["score"], reverse=True)
+        return {"emotions": emotions, "top_emotion": emotions[0] if emotions else None}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MASTER audio error: {str(e)}")
     finally:
         delete_temp_file(tmp_path)

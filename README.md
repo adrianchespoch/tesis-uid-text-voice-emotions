@@ -69,3 +69,55 @@ pip install "huggingface_hub[cli]"
 python training/train_audio_emotion_mspmea.py
 ```
 
+
+### New Fine Tunning
+- train_text_emotion_master.py
+- d
+
+```sh
+# Deps with 3.11
+curl https://pyenv.run | bash
+exec $SHELL -l
+pyenv install 3.11.9
+pyenv local 3.11.9   # in priject folder
+
+# activate venv
+python -m venv .venv311
+source .venv311/bin/activate
+pip install -U pip wheel setuptools
+
+
+# PyTorch + torchaudio CUDA 12.1
+pip install --index-url https://download.pytorch.org/whl/cu121 \
+  torch==2.5.1+cu121 torchaudio==2.5.1+cu121
+
+
+pip install "transformers==4.44.2" "datasets==2.21.0" accelerate==0.34.2 evaluate==0.4.2 \
+            huggingface_hub==0.26.2 packaging==24.2 \
+            scikit-learn==1.5.2 matplotlib==3.9.2 soundfile==0.12.1 \
+            fastapi==0.115.6 "uvicorn[standard]"==0.32.0 \
+            openai-whisper==20240930 pysentimiento==0.7.3
+```
+
+Test env
+```sh
+python - <<'PY'
+import torch, torchaudio, whisper, transformers, datasets
+print("torch:", torch.__version__, "| cuda avail:", torch.cuda.is_available(), "| cuda:", torch.version.cuda)
+print("torchaudio:", torchaudio.__version__)
+print("transformers:", transformers.__version__, "| datasets:", datasets.__version__)
+print("whisper OK:", whisper.__package__)
+PY
+```
+
+
+```sh
+SEED=42 REDUCE_TO_3=0 EPOCHS=8 \
+python training/train_text_emotion_master.py
+
+```
+
+
+
+
+
