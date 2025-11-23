@@ -91,6 +91,87 @@ else:
 
 #  <=====================
 
+# -----------------
+# --- NUEVAS ENV Y LOAD PARA PRO v2 ---
+import json, torch
+from transformers import pipeline
+
+# Ruta del PRO v2
+TEXT_PRO_V2_DIR = (
+    BASE_DIR
+    / "models"
+    / (
+        "text_emotion_pro_v2_3c"
+        if os.getenv("REDUCE_TO_3", "0") == "1"
+        else "text_emotion_pro_v2_5c"
+    )
+)
+TEXT_PRO_V2_ON_CPU = bool(int(os.getenv("TEXT_PRO_V2_ON_CPU", "0")))
+TEXT_PRO_V2_DEVICE = (
+    -1 if TEXT_PRO_V2_ON_CPU else (0 if torch.cuda.is_available() else -1)
+)
+
+
+def _load_text_pro_v2():
+    if TEXT_PRO_V2_DIR.exists():
+        print(f"Cargando modelo PRO v2 texto desde: {TEXT_PRO_V2_DIR}")
+        clf = pipeline(
+            "text-classification",
+            model=str(TEXT_PRO_V2_DIR),
+            tokenizer=str(TEXT_PRO_V2_DIR),
+            return_all_scores=True,
+            device=TEXT_PRO_V2_DEVICE,
+        )
+        # umbrales + temperatura
+        try:
+            with open(TEXT_PRO_V2_DIR / "thresholds.json") as f:
+                th = json.load(f)
+        except Exception:
+            th = None
+        try:
+            with open(TEXT_PRO_V2_DIR / "temperature.json") as f:
+                temp = json.load(f).get("temperature", 1.0)
+        except Exception:
+            temp = 1.0
+        return clf, th, float(temp)
+    else:
+        print("⚠️ Modelo PRO v2 texto no encontrado.")
+        return None, None, 1.0
+
+
+text_pro_v2, THRESH_PRO_V2, TEMP_PRO_V2 = _load_text_pro_v2()
+
+
+def _apply_thresholds(scores, thresholds):
+    if not thresholds:
+        return max(scores, key=lambda x: x["score"])
+    ok = [s for s in scores if s["score"] >= thresholds.get(s["label"], 0.5)]
+    return (
+        max(ok, key=lambda x: x["score"])
+        if ok
+        else max(scores, key=lambda x: x["score"])
+    )
+
+
+def _apply_temperature(scores, temperature: float):
+    # scores: [{'label':..., 'score':...}] con score ~ softmax
+    # re-aplicar temperatura t: p_i := softmax(log(p_i)/t)  (aprox)
+    import math
+
+    if abs(temperature - 1.0) < 1e-6:
+        return scores
+    # evitar p=0
+    eps = 1e-12
+    logps = [math.log(max(s["score"], eps)) for s in scores]
+    scaled = [math.exp(lp / temperature) for lp in logps]
+    Z = sum(scaled) + eps
+    return [
+        {"label": s["label"], "score": float(v / Z)} for s, v in zip(scores, scaled)
+    ]
+
+
+# --- FIN NUEVAS ENV Y LOAD PARA PRO v2 ---
+
 
 app = FastAPI(
     title="Sistema Voz a Texto con Análisis Emocional",
@@ -642,5 +723,77 @@ async def transcribe_emotion_es_master(file: UploadFile = File(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MASTER texto ES error: {str(e)}")
+    finally:
+        delete_temp_file(tmp_path)
+
+
+@app.post("/transcribe/emotion-text-pro-v2")
+async def transcribe_emotion_text_pro_v2(file: UploadFile = File(...)):
+    """
+    Transcribe en ES (Whisper) y etiqueta emociones con el modelo PRO v2 (multi-corpus)
+    usando:
+      - Temperature scaling (calibración)
+      - Umbral por clase (PR)
+    """
+    if text_pro_v2 is None:
+        raise HTTPException(
+            status_code=500, detail="Modelo PRO v2 de texto no disponible."
+        )
+
+    ensure_audio(file)
+    tmp_path = save_temp_file(file, suffix=".wav")
+    try:
+        # Transcribir en español
+        result = asr_model.transcribe(tmp_path, language="es")
+        text = result.get("text", "").strip()
+        segments = result.get("segments", [])
+
+        segment_out, global_acc = [], {}
+        total_w = 0.0
+
+        for s in segments:
+            seg_text = s.get("text", "").strip()
+            if not seg_text:
+                continue
+            raw = text_pro_v2(seg_text, top_k=None)[0]  # [{'label':..., 'score':...}]
+            # Calibrar temperaturas
+            cal = _apply_temperature(raw, TEMP_PRO_V2)
+            top = _apply_thresholds(cal, THRESH_PRO_V2)
+
+            st, en = float(s.get("start", 0.0)), float(s.get("end", 0.0))
+            dur = max(en - st, 0.1)
+            total_w += dur
+            for item in cal:
+                global_acc[item["label"]] = (
+                    global_acc.get(item["label"], 0.0) + item["score"] * dur
+                )
+
+            segment_out.append(
+                {
+                    "start": st,
+                    "end": en,
+                    "text": seg_text,
+                    "top_emotion": top,
+                    "emotions": cal,
+                }
+            )
+
+        global_scores = (
+            [{"label": k, "score": float(v / total_w)} for k, v in global_acc.items()]
+            if total_w > 0
+            else []
+        )
+        global_scores.sort(key=lambda x: x["score"], reverse=True)
+
+        return {
+            "transcription": text,
+            "global_emotions": global_scores,
+            "top_global_emotions": global_scores[:3],
+            "segments": segment_out,
+            "thresholds_used": THRESH_PRO_V2,
+            "temperature_used": TEMP_PRO_V2,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PRO v2 text error: {str(e)}")
     finally:
         delete_temp_file(tmp_path)

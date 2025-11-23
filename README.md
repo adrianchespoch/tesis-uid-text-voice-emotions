@@ -153,6 +153,15 @@ uvicorn app.main:app --host 0.0.0.0 --port 7777 --workers 1
 
 ```
 
+<!-- -------------------------- -->
+```
+# En tu desktop 12GB:
+export WHISPER_MODEL=small             # o base/small para +calidad
+export WHISPER_DEVICE=gpu              # usa GPU si quieres
+export TEXT_PRO_V2_ON_CPU=0            # corre el clasificador en GPU
+uvicorn app.main:app --host 0.0.0.0 --port 7777 --workers 1
+
+```
 
 ```
 ```
