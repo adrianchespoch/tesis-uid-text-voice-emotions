@@ -644,22 +644,3 @@ async def transcribe_emotion_es_master(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"MASTER texto ES error: {str(e)}")
     finally:
         delete_temp_file(tmp_path)
-
-
-@app.post("/audio-emotions/master")
-async def audio_emotions_master_ep(file: UploadFile = File(...)):
-    if audio_emotion_master is None:
-        raise HTTPException(
-            status_code=500, detail="Modelo MASTER audio no disponible."
-        )
-    ensure_audio(file)
-    tmp_path = save_temp_file(file, suffix=".wav")
-    try:
-        results = audio_emotion_master(tmp_path)
-        emotions = [{"label": r["label"], "score": float(r["score"])} for r in results]
-        emotions.sort(key=lambda x: x["score"], reverse=True)
-        return {"emotions": emotions, "top_emotion": emotions[0] if emotions else None}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"MASTER audio error: {str(e)}")
-    finally:
-        delete_temp_file(tmp_path)
