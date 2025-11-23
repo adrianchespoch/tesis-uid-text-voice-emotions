@@ -1,3 +1,4 @@
+# app/main.py
 import os
 import tempfile
 from collections import defaultdict
@@ -17,6 +18,12 @@ WHISPER_MODEL_NAME = os.getenv(
 )  # "tiny", "base", "small", etc.
 
 DEVICE = 0 if torch.cuda.is_available() else -1
+
+# ---- Flags/Devices controlados por ENV (cambios nuevos) ----
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # "cpu" o "cuda"
+TEXT_ON_CPU = os.getenv("TEXT_ON_CPU", "1") == "1"  # si 1 => pipelines de TEXTO en CPU
+FORCE_PYSENTIMIENTO_CPU = os.getenv("FORCE_PYSENTIMIENTO_CPU", "1") == "1"
+TEXT_DEVICE = -1 if TEXT_ON_CPU else (0 if torch.cuda.is_available() else -1)
 
 #  ----------------->
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -44,7 +51,7 @@ if os.path.isdir(FT_EMOTION_MODEL_PATH):
         model=FT_EMOTION_MODEL_PATH,
         tokenizer=FT_EMOTION_MODEL_PATH,
         return_all_scores=True,
-        device=DEVICE,
+        device=TEXT_DEVICE,  # <- antes: DEVICE
     )
 else:
     print("⚠️  Modelo fine-tuned ES no encontrado, FT deshabilitado.")
@@ -62,7 +69,7 @@ if TEXT_MASTER_DIR.is_dir():
         model=str(TEXT_MASTER_DIR),
         tokenizer=str(TEXT_MASTER_DIR),
         return_all_scores=True,
-        device=DEVICE,
+        device=TEXT_DEVICE,  # <- antes: DEVICE
     )
 else:
     print("⚠️  Modelo MASTER texto ES no encontrado.")
@@ -102,8 +109,8 @@ app.add_middleware(
 
 
 # ### Load models once at startup ==================================
-print(f"Cargando modelo Whisper: {WHISPER_MODEL_NAME}")
-asr_model = whisper.load_model(WHISPER_MODEL_NAME)
+print(f"Cargando modelo Whisper: {WHISPER_MODEL_NAME} en {WHISPER_DEVICE}")
+asr_model = whisper.load_model(WHISPER_MODEL_NAME, device=WHISPER_DEVICE)
 
 # Emociones en texto en inglés (baseline, HuggingFace)
 print("Cargando modelo de emociones en texto (inglés)...")
@@ -111,16 +118,28 @@ emotion_en_classifier = pipeline(
     "text-classification",
     model="j-hartmann/emotion-english-distilroberta-base",
     return_all_scores=True,
-    device=DEVICE,
+    device=TEXT_DEVICE,  # <- antes: DEVICE
 )
 
 # Emociones en audio (SER)
 print("Cargando modelo de emociones en audio (SER)...")
-audio_emotion_classifier = pipeline(
-    "audio-classification",
-    model="superb/wav2vec2-base-superb-er",
-    device=DEVICE,
-)
+try:
+    audio_emotion_classifier = pipeline(
+        "audio-classification",
+        model="superb/wav2vec2-base-superb-er",
+        device=DEVICE,  # intenta GPU si hay
+    )
+except torch.cuda.OutOfMemoryError:
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+    audio_emotion_classifier = pipeline(
+        "audio-classification",
+        model="superb/wav2vec2-base-superb-er",
+        device=-1,  # fallback CPU
+    )
+    print("⚠️ SER cargado en CPU por falta de memoria GPU")
 
 # Sentimiento multilingüe
 print("Cargando modelo de sentimiento multilingüe...")
@@ -128,11 +147,17 @@ sentiment_classifier = pipeline(
     "text-classification",
     model="tabularisai/multilingual-sentiment-analysis",
     return_all_scores=True,
-    device=DEVICE,
+    device=TEXT_DEVICE,  # <- antes: DEVICE
 )
 
 # Emociones en texto español (pysentimiento)
 print("Inicializando pysentimiento (emociones ES)...")
+if FORCE_PYSENTIMIENTO_CPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # aísla en CPU
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
 pysentimiento_emotion_es = create_analyzer(task="emotion", lang="es")
 
 
@@ -430,7 +455,9 @@ async def transcribe_pysentimiento_emotion_es(file: UploadFile = File(...)):
             total_weight += weight
 
             for e in emotions:
-                global_scores[e["label"]] += e["score"] * weight
+                global_scores[e]["label"] = (
+                    global_scores.get(e["label"], 0.0) + e["score"] * weight
+                )
 
             segment_emotions.append(
                 {

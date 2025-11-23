@@ -120,4 +120,46 @@ python training/train_text_emotion_master.py
 
 
 
+#### T 3
+
+- train_text_emotion_pro
+```sh
+pip uninstall -y huggingface_hub
+pip install "huggingface_hub==0.26.2"
+pip install -U "transformers==4.44.2" "tokenizers==0.19.1" "datasets==2.21.0" "evaluate==0.4.3" "accelerate==0.34.2"
+
+
+#  --------
+huggingface-cli login
+
+export HUGGINGFACE_HUB_TOKEN="hf_token"
+
+SEED=42 REDUCE_TO_3=0 K_FOLDS=5 EPOCHS=10 \
+BASE_MODEL="PlanTL-GOB-ES/roberta-base-bne" \
+BATCH_TRAIN=8 BATCH_EVAL=16 GRAD_ACCUM=2 MAX_LEN=160 \
+python training/train_text_emotion_pro.py
+
+
+```
+
+```
+export TOKENIZERS_PARALLELISM=false
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export WHISPER_MODEL=tiny
+export WHISPER_DEVICE=cpu
+export TEXT_ON_CPU=1
+export FORCE_PYSENTIMIENTO_CPU=1
+uvicorn app.main:app --host 0.0.0.0 --port 7777 --workers 1
+
+```
+
+
+```
+```
+
+```
+```
+
+
+
 

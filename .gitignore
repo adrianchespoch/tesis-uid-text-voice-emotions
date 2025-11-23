@@ -95,3 +95,4 @@ docs/*.md
 models/emotion*
 .venv311
 experiments/
+models/text_emotion_pro_5c/

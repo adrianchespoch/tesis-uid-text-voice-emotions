@@ -22,3 +22,21 @@ test-master-text:
 
 test-master-audio:
 	curl -F "file=@/path/audio_es.wav" http://127.0.0.1:7777/audio-emotions/master
+
+
+
+# ----------------
+train-text-pro-5:
+	SEED=42 REDUCE_TO_3=0 K_FOLDS=5 EPOCHS=10 \
+	BASE_MODEL="PlanTL-GOB-ES/roberta-base-bne" \
+	BATCH_TRAIN=8 BATCH_EVAL=16 GRAD_ACCUM=2 MAX_LEN=160 \
+	python training/train_text_emotion_pro.py
+
+train-text-pro-3:
+	SEED=42 REDUCE_TO_3=1 K_FOLDS=5 EPOCHS=10 \
+	BASE_MODEL="PlanTL-GOB-ES/roberta-base-bne" \
+	BATCH_TRAIN=8 BATCH_EVAL=16 GRAD_ACCUM=2 MAX_LEN=160 \
+	python training/train_text_emotion_pro.py
+
+
+
