@@ -1,4 +1,3 @@
-# app/main.py
 import os
 import tempfile
 from collections import defaultdict
@@ -230,6 +229,7 @@ def split_words_with_timestamps(text: str, start: float, end: float):
         out.append({"text": w, "start": float(w_start), "end": float(w_end)})
         t = w_end
     return out
+
 
 # --------------
 
@@ -953,5 +953,162 @@ async def transcribe_karaoke(file: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Karaoke error: {str(e)}")
+    finally:
+        delete_temp_file(tmp_path)
+
+
+# =========================================================
+# TRANSCRIPTION + KARAOKE + EMOCIONES (ES MASTER) =========
+# =========================================================
+@app.post("/transcribe/karaoke-emotion-es-master")
+async def transcribe_karaoke_emotion_es_master(file: UploadFile = File(...)):
+    """
+    Devuelve transcripción + segmentos con palabras (timestamps) + emociones por segmento
+    usando el modelo MASTER de emociones en TEXTO (ES).
+    - Si USE_FASTER_WHISPER=1 -> word timestamps reales (faster-whisper)
+    - Si no -> fallback aproximado repartiendo tiempo entre palabras.
+    """
+    if emotion_es_master is None:
+        raise HTTPException(
+            status_code=500, detail="Modelo MASTER texto ES no disponible."
+        )
+
+    ensure_audio(file)
+    tmp_path = save_temp_file(file, suffix=".wav")
+
+    try:
+        all_segments = []
+        global_text_parts = []
+        duration_total = None
+        language_detected = "es"
+
+        # ---------- ASR con palabras ----------
+        if asr_backend == "faster-whisper":
+            segments, info = faster_model.transcribe(
+                tmp_path,
+                language="es",
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 200},
+                word_timestamps=True,
+            )
+            duration_total = (
+                float(info.duration)
+                if hasattr(info, "duration") and info.duration
+                else None
+            )
+            language_detected = info.language if hasattr(info, "language") else "es"
+
+            for seg in segments:
+                seg_text = (seg.text or "").strip()
+                global_text_parts.append(seg_text)
+                words = []
+                if seg.words:
+                    for w in seg.words:
+                        words.append(
+                            {
+                                "text": (w.word or "").strip(),
+                                "start": (
+                                    float(w.start)
+                                    if w.start is not None
+                                    else float(seg.start)
+                                ),
+                                "end": (
+                                    float(w.end)
+                                    if w.end is not None
+                                    else float(seg.end)
+                                ),
+                            }
+                        )
+                else:
+                    words = split_words_with_timestamps(
+                        seg_text, float(seg.start), float(seg.end)
+                    )
+
+                all_segments.append(
+                    {
+                        "start": float(seg.start),
+                        "end": float(seg.end),
+                        "text": seg_text,
+                        "words": words,
+                    }
+                )
+
+        else:
+            # Whisper estándar (sin palabras nativas) -> fallback
+            result = asr_model.transcribe(tmp_path, language="es")
+            language_detected = "es"
+            segs = result.get("segments", []) or []
+            for s in segs:
+                st = float(s.get("start", 0.0))
+                en = float(s.get("end", 0.0))
+                seg_text = (s.get("text") or "").strip()
+                global_text_parts.append(seg_text)
+                words = split_words_with_timestamps(seg_text, st, en)
+                all_segments.append(
+                    {
+                        "start": st,
+                        "end": en,
+                        "text": seg_text,
+                        "words": words,
+                    }
+                )
+
+        transcription_full = " ".join([t for t in global_text_parts if t]).strip()
+
+        # ---------- Emociones por segmento + agregación global ----------
+        global_scores = defaultdict(float)
+        total_weight = 0.0
+        enriched_segments = []
+
+        for s in all_segments:
+            seg_text = s["text"]
+            if not seg_text:
+                enriched_segments.append({**s, "top_emotion": None, "emotions": []})
+                continue
+
+            em_result = emotion_es_master(seg_text, top_k=None)
+            emotions = [
+                {"label": d["label"], "score": float(d["score"])} for d in em_result
+            ]
+            top_emotion = max(emotions, key=lambda x: x["score"]) if emotions else None
+
+            st, en = float(s["start"]), float(s["end"])
+            dur = max(en - st, 0.1)
+            total_weight += dur
+            for item in emotions:
+                global_scores[item["label"]] += item["score"] * dur
+
+            enriched_segments.append(
+                {
+                    **s,
+                    "top_emotion": top_emotion,
+                    "emotions": emotions,
+                }
+            )
+
+        global_emotions = (
+            [
+                {"label": lab, "score": float(score_sum / total_weight)}
+                for lab, score_sum in global_scores.items()
+            ]
+            if total_weight > 0
+            else []
+        )
+        global_emotions.sort(key=lambda x: x["score"], reverse=True)
+
+        return {
+            "backend": (
+                "faster-whisper" if asr_backend == "faster-whisper" else "whisper"
+            ),
+            "transcription": transcription_full,
+            "segments": enriched_segments,
+            "global_emotions": global_emotions,
+            "top_global_emotions": global_emotions[:3],
+            "duration": duration_total,
+            "language": language_detected,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Karaoke+Emotions error: {str(e)}")
     finally:
         delete_temp_file(tmp_path)

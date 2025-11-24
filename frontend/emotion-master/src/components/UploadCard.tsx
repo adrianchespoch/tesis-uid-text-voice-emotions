@@ -1,87 +1,95 @@
-import { useRef, useState } from 'react';
+import { api } from '@/api/client';
+import { usePlayerStore } from '@/store/usePlayerStore';
+import type { KaraokeResponse } from '@/types';
 import { useMutation } from '@tanstack/react-query';
-import { api } from '@/lib/api';
-import type { TranscribeResponse } from '@/types';
-import { usePlayerStore } from '@/store/player';
+import { useRef, useState } from 'react';
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
-import { Badge } from '@/components/ui/badge';
-
-export function UploadCard() {
+export default function UploadCard() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [fileName, setFileName] = useState<string>('');
-  const setAudioUrl = usePlayerStore(s => s.setAudioUrl);
-  const setFromResponse = usePlayerStore(s => s.setFromResponse);
-  const clear = usePlayerStore(s => s.clear);
+  const { setAudioUrl, loadKaraoke, reset } = usePlayerStore();
 
   const mutation = useMutation({
     mutationFn: async (file: File) => {
-      const form = new FormData();
-      form.append('file', file);
-      const { data } = await api.post<TranscribeResponse>(
-        '/transcribe/emotion-es-master',
-        form,
-        { headers: { 'Content-Type': 'multipart/form-data' } }
+      const fd = new FormData();
+      fd.append('file', file);
+      const { data } = await api.post<KaraokeResponse>(
+        '/transcribe/karaoke',
+        fd,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        }
       );
-      return { data, file };
+      return data;
     },
-    onSuccess: ({ data, file }) => {
-      const url = URL.createObjectURL(file);
-      setAudioUrl(url);
-      setFromResponse(data);
+    onSuccess: data => {
+      loadKaraoke(data);
     },
   });
 
-  const onSelectFile = (f?: File) => {
+  const onPick = () => inputRef.current?.click();
+
+  const onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
     if (!f) return;
     setFileName(f.name);
-    clear();
+    // Url local para reproducir el mismo archivo que enviamos
+    const localUrl = URL.createObjectURL(f);
+    setAudioUrl(localUrl);
+    // reiniciar estado karaoke y hacer la llamada
+    mutation.reset();
+    reset();
+    setAudioUrl(localUrl);
+    setFileName(f.name);
     mutation.mutate(f);
   };
 
   return (
-    <Card className="border-border/60">
-      <CardHeader>
-        <CardTitle>Subir audio y transcribir</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex items-center gap-3">
-          <input
-            ref={inputRef}
-            type="file"
-            accept="audio/*"
-            className="hidden"
-            onChange={e => onSelectFile(e.target.files?.[0])}
-          />
-          <Button variant="secondary" onClick={() => inputRef.current?.click()}>
-            Elegir archivo
-          </Button>
-          {fileName ? <Badge variant="outline">{fileName}</Badge> : null}
+    <div className="rounded-2xl border p-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold">Subir audio y transcribir</h3>
+          <p className="text-sm text-muted-foreground">
+            Envía un archivo de audio. Obtendrás transcripción y palabras con
+            timestamp.
+          </p>
         </div>
+        <button
+          onClick={onPick}
+          className="rounded-xl border px-4 py-2 hover:bg-secondary"
+        >
+          Elegir archivo
+        </button>
+      </div>
 
-        {mutation.isPending ? (
-          <div className="space-y-2">
-            <div className="text-sm text-muted-foreground">
-              Procesando (Whisper + emociones)…
-            </div>
-            <Progress value={45} />
-          </div>
-        ) : null}
+      <input
+        ref={inputRef}
+        type="file"
+        accept="audio/*"
+        onChange={onChange}
+        className="hidden"
+      />
 
-        {mutation.isError ? (
-          <div className="text-sm text-destructive">
-            {mutation.error instanceof Error
-              ? mutation.error.message
-              : 'Error procesando el audio'}
-          </div>
-        ) : null}
+      {fileName ? (
+        <p className="mt-2 text-sm">
+          Archivo: <span className="font-medium">{fileName}</span>
+        </p>
+      ) : null}
 
-        {mutation.isSuccess ? (
-          <div className="text-sm text-green-500">Listo ✅</div>
-        ) : null}
-      </CardContent>
-    </Card>
+      <div className="mt-3 text-sm">
+        {mutation.isPending && (
+          <span className="text-amber-600">Procesando…</span>
+        )}
+        {mutation.isError && (
+          <span className="text-red-600">
+            Error:{' '}
+            {(mutation.error as Error)?.message ?? 'falló la transcripción'}
+          </span>
+        )}
+        {mutation.isSuccess && (
+          <span className="text-emerald-600">Listo ✅</span>
+        )}
+      </div>
+    </div>
   );
 }

@@ -1,44 +1,47 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-
-import { GlobalEmotions } from '@/components/GlobalEmotions';
-import { PlayerBar } from '@/components/PlayerBar';
+import { EmotionBars } from '@/components/EmotionBars';
+import {
+  PlayerWithLyrics,
+  useSeekFromSegments,
+} from '@/components/PlayerWithLyrics';
 import { SegmentList } from '@/components/SegmentList';
-import { UploadCard } from '@/components/UploadCard';
-import { usePlayerStore } from '@/store/player';
+import { UploadBar } from '@/components/UploadBar';
+import { useTranscribeStore } from '@/store/useTranscribeStore';
 
 export default function App() {
-  const queryClient = new QueryClient();
-  const transcription = usePlayerStore(s => s.transcription);
+  const data = useTranscribeStore(s => s.data);
+  const seek = useSeekFromSegments();
 
   return (
-    <>
-      <QueryClientProvider client={queryClient}>
-        <div className="mx-auto max-w-6xl p-4 md:p-6">
-          <h1 className="mb-4 text-2xl font-semibold tracking-tight">
-            🎧 Emotion Master
-          </h1>
+    <div className="mx-auto max-w-6xl p-6 space-y-6">
+      <h1 className="text-2xl font-semibold flex items-center gap-2">
+        <span>🎧</span> Emotion Master
+      </h1>
 
-          <div className="grid gap-4 md:grid-cols-[1.7fr_1.2fr]">
-            <div className="space-y-4">
-              <UploadCard />
-              <PlayerBar />
-              {transcription ? (
-                <div className="rounded-xl border bg-card p-4">
-                  <h3 className="mb-2 text-base font-medium">Transcripción</h3>
-                  <p className="whitespace-pre-wrap leading-relaxed text-sm">
-                    {transcription}
-                  </p>
-                </div>
-              ) : null}
+      <div className="rounded-xl border p-4">
+        <UploadBar />
+      </div>
+
+      {data && (
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+          <div className="md:col-span-3 space-y-4">
+            <PlayerWithLyrics />
+            {/* Transcripción completa  */}
+            {/* <div className="rounded-xl border p-4">
+              <div className="font-medium mb-2">Transcripción</div>
+              <p className="text-sm leading-7">{data.transcription}</p>
+            </div> */}
+          </div>
+
+          <div className="md:col-span-2 space-y-4">
+            <div className="rounded-xl border p-4">
+              <EmotionBars items={data.global_emotions} />
             </div>
-
-            <div className="space-y-4">
-              <GlobalEmotions />
-              <SegmentList />
+            <div className="rounded-xl border p-2">
+              <SegmentList onSeek={seek} />
             </div>
           </div>
         </div>
-      </QueryClientProvider>
-    </>
+      )}
+    </div>
   );
 }
