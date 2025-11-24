@@ -25,11 +25,6 @@ export default function App() {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
           <div className="md:col-span-3 space-y-4">
             <PlayerWithLyrics />
-            {/* Transcripción completa  */}
-            {/* <div className="rounded-xl border p-4">
-              <div className="font-medium mb-2">Transcripción</div>
-              <p className="text-sm leading-7">{data.transcription}</p>
-            </div> */}
           </div>
 
           <div className="md:col-span-2 space-y-4">

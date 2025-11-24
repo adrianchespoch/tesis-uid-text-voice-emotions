@@ -1,44 +1,99 @@
-import { cn } from '@/lib/utils';
+import { useEffect, useMemo, useRef } from 'react';
 import { useTranscribeStore } from '@/store/useTranscribeStore';
 
-function fmt(t: number) {
+type Props = {
+  onSeek?: (t: number) => void; // compatibilidad con tu App.tsx actual
+};
+
+export function SegmentList({ onSeek }: Props) {
+  const data = useTranscribeStore(s => s.data);
+  const currentTime = useTranscribeStore(s => s.currentTime);
+  const seek = useTranscribeStore(s => s.seek);
+
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const segments = data?.segments ?? [];
+
+  // cuál está activo
+  const activeIdx = useMemo(() => {
+    const i = segments.findIndex(
+      s => currentTime >= s.start && currentTime < s.end
+    );
+    return i === -1 ? 0 : i;
+  }, [segments, currentTime]);
+
+  // autoscroll del item activo (como Spotify queue)
+  useEffect(() => {
+    const container = listRef.current;
+    if (!container) return;
+    const item = container.querySelector<HTMLDivElement>(
+      `[data-seg="${activeIdx}"]`
+    );
+    if (!item) return;
+
+    const cRect = container.getBoundingClientRect();
+    const iRect = item.getBoundingClientRect();
+    const visible = iRect.top >= cRect.top && iRect.bottom <= cRect.bottom;
+
+    if (!visible) {
+      item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [activeIdx]);
+
+  const handleClick = (t: number) => {
+    // adelantamos 0.01s para forzar repaint de word-highlighting
+    const target = Math.max(0, t + 0.01);
+    if (onSeek) onSeek(target);
+    else seek(target);
+  };
+
+  return (
+    <div className="p-2">
+      <div className="text-sm font-medium mb-2">Subtítulos por segmentos</div>
+      <div
+        ref={listRef}
+        className="space-y-2 max-h-[520px] overflow-y-auto pr-1"
+      >
+        {segments.map((s, idx) => {
+          const isActive = idx === activeIdx;
+          const top = s.top_emotion;
+          const pill = top ? `${top.label} (${top.score.toFixed(2)})` : '';
+
+          return (
+            <div
+              key={idx}
+              data-seg={idx}
+              role="button"
+              tabIndex={0}
+              onClick={() => handleClick(s.start)}
+              onKeyDown={e => e.key === 'Enter' && handleClick(s.start)}
+              className={
+                'rounded-lg border p-3 text-sm cursor-pointer focus:outline-none ' +
+                (isActive ? 'bg-muted ring-1 ring-ring' : 'hover:bg-muted/50')
+              }
+            >
+              <div className="text-[11px] opacity-70 mb-1">
+                {formatTime(s.start)} - {formatTime(s.end)}
+              </div>
+              <div className="line-clamp-2">{s.text}</div>
+              {pill && (
+                <div className="mt-2 text-[11px] inline-flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-full border">
+                    {pill}
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function formatTime(t: number) {
   const m = Math.floor(t / 60);
   const s = Math.floor(t % 60);
   return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-export function SegmentList({ onSeek }: { onSeek: (t: number) => void }) {
-  const data = useTranscribeStore(s => s.data);
-  const cur = useTranscribeStore(s => s.currentTime);
-  const segments = data?.segments ?? [];
-
-  return (
-    <div className="space-y-2 overflow-y-auto max-h-[58vh] pr-2">
-      <div className="font-medium">Subtítulos por segmentos</div>
-      {segments.map((s, i) => {
-        const isActive = cur >= s.start && cur < s.end;
-        const chip = s.top_emotion
-          ? `${s.top_emotion.label} (${s.top_emotion.score.toFixed(2)})`
-          : '—';
-        return (
-          <button
-            key={`${s.start}-${i}`}
-            onClick={() => onSeek(s.start + 0.01)}
-            className={cn(
-              'w-full text-left rounded-lg border px-3 py-2 hover:bg-accent',
-              isActive && 'bg-accent'
-            )}
-          >
-            <div className="text-[11px] text-muted-foreground">
-              {fmt(s.start)} - {fmt(s.end)}
-            </div>
-            <div className="truncate">{s.text}</div>
-            <div className="mt-1 inline-flex text-[11px] px-1.5 py-0.5 rounded bg-muted">
-              {chip}
-            </div>
-          </button>
-        );
-      })}
-    </div>
-  );
 }

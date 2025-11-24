@@ -13,11 +13,9 @@ function findActiveIndex(words: WordTS[], t: number) {
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     const w = words[mid];
-    if (t < w.start) {
-      hi = mid - 1;
-    } else if (t >= w.end) {
-      lo = mid + 1;
-    } else {
+    if (t < w.start) hi = mid - 1;
+    else if (t >= w.end) lo = mid + 1;
+    else {
       ans = mid;
       break;
     }
@@ -29,17 +27,25 @@ export function PlayerWithLyrics() {
   const audioUrl = useTranscribeStore(s => s.audioUrl);
   const data = useTranscribeStore(s => s.data);
   const setCurrentTime = useTranscribeStore(s => s.setCurrentTime);
-  const currentTime = useTranscribeStore(s => s.currentTime); // <— SUSCRIPCIÓN REAL
+  const currentTime = useTranscribeStore(s => s.currentTime);
+  const setAudioEl = useTranscribeStore(s => s.setAudioEl);
 
   const audioRef = useRef<HTMLAudioElement>(null);
+  const lyricsRef = useRef<HTMLDivElement>(null);
   const [rafOn, setRafOn] = useState(false);
 
-  // flatten de palabras
+  // flatten de palabras (orden natural)
   const words = useMemo<WordTS[]>(() => {
     const out: WordTS[] = [];
     (data?.segments ?? []).forEach(s => s.words && out.push(...s.words));
     return out;
   }, [data]);
+
+  // conecta <audio> al store (una sola fuente de la verdad)
+  useEffect(() => {
+    if (audioRef.current) setAudioEl(audioRef.current);
+    return () => setAudioEl(null);
+  }, [setAudioEl]);
 
   // timeupdate (respaldo) + rAF (suavidad)
   useEffect(() => {
@@ -55,7 +61,7 @@ export function PlayerWithLyrics() {
     };
 
     a.addEventListener('timeupdate', onTime);
-    // activa rAF solo cuando está reproduciendo
+
     const onPlay = () => {
       if (!rafOn) {
         setRafOn(true);
@@ -79,23 +85,50 @@ export function PlayerWithLyrics() {
     };
   }, [setCurrentTime, rafOn]);
 
-  // índice activo (O(log N))
+  // índice activo y autoscroll suave dentro del párrafo
   const activeIdx = useMemo(
     () => findActiveIndex(words, currentTime),
     [words, currentTime]
   );
+
+  useEffect(() => {
+    if (activeIdx < 0) return;
+    const container = lyricsRef.current;
+    if (!container) return;
+
+    const span = container.querySelector<HTMLSpanElement>(
+      `[data-w="${activeIdx}"]`
+    );
+    if (!span) return;
+
+    const cRect = container.getBoundingClientRect();
+    const sRect = span.getBoundingClientRect();
+    const isVisible = sRect.top >= cRect.top && sRect.bottom <= cRect.bottom;
+
+    if (!isVisible) {
+      span.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+        inline: 'nearest',
+      });
+    }
+  }, [activeIdx]);
 
   if (!audioUrl) return null;
 
   return (
     <div className="space-y-3">
       <audio ref={audioRef} src={audioUrl} controls className="w-full" />
-      <div className="rounded-lg border p-4 leading-8">
+      <div
+        ref={lyricsRef}
+        className="rounded-lg border p-4 leading-8 max-h-60 overflow-y-auto"
+      >
         {words.map((w, idx) => {
           const isActive = idx === activeIdx || within(currentTime, w);
           return (
             <span
               key={idx}
+              data-w={idx}
               className={
                 isActive ? 'bg-foreground text-background rounded px-1' : ''
               }
@@ -111,13 +144,6 @@ export function PlayerWithLyrics() {
 
 // eslint-disable-next-line react-refresh/only-export-components
 export function useSeekFromSegments() {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  // expón una función para SegmentList
-  useEffect(() => {
-    const el = document.querySelector('audio');
-    if (el) audioRef.current = el as HTMLAudioElement;
-  }, []);
-  return (t: number) => {
-    if (audioRef.current) audioRef.current.currentTime = t;
-  };
+  const seek = useTranscribeStore(s => s.seek);
+  return (t: number) => seek(t);
 }
