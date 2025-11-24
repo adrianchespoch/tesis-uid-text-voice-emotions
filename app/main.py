@@ -19,6 +19,14 @@ WHISPER_MODEL_NAME = os.getenv(
 
 DEVICE = 0 if torch.cuda.is_available() else -1
 
+# --------------
+import re
+
+USE_FASTER = os.getenv("USE_FASTER_WHISPER", "0") == "1"
+FASTER_MODEL = os.getenv("FASTER_WHISPER_MODEL", os.getenv("WHISPER_MODEL", "small"))
+# --------------
+
+
 # ---- Flags/Devices controlados por ENV (cambios nuevos) ----
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # "cpu" o "cuda"
 TEXT_ON_CPU = os.getenv("TEXT_ON_CPU", "1") == "1"  # si 1 => pipelines de TEXTO en CPU
@@ -170,6 +178,62 @@ def _apply_temperature(scores, temperature: float):
     ]
 
 
+# ------------------
+print(
+    f"Cargando modelo Whisper: {WHISPER_MODEL_NAME} en {'cuda' if torch.cuda.is_available() and os.getenv('WHISPER_DEVICE','cuda')!='cpu' else 'cpu'}"
+)
+
+asr_backend = "whisper"
+asr_model = None
+faster_model = None
+
+if USE_FASTER:
+    try:
+        from faster_whisper import WhisperModel
+
+        device = (
+            "cuda"
+            if (
+                torch.cuda.is_available()
+                and os.getenv("WHISPER_DEVICE", "cuda") != "cpu"
+            )
+            else "cpu"
+        )
+        compute_type = os.getenv(
+            "FASTER_COMPUTE_TYPE", "float16" if device == "cuda" else "int8"
+        )
+        faster_model = WhisperModel(
+            FASTER_MODEL, device=device, compute_type=compute_type
+        )
+        asr_backend = "faster-whisper"
+        print(f"Usando Faster-Whisper ({FASTER_MODEL}) [{device}/{compute_type}]")
+    except Exception as e:
+        print(f"⚠️ No pude cargar Faster-Whisper: {e}. Voy con whisper estándar.")
+        asr_backend = "whisper"
+
+
+def split_words_with_timestamps(text: str, start: float, end: float):
+    """
+    Fallback si no hay word timestamps: reparte el tiempo del segmento
+    proporcional al número de palabras (se conserva orden).
+    """
+    cleaned = re.sub(r"\s+", " ", text.strip())
+    if not cleaned:
+        return []
+    words = cleaned.split(" ")
+    dur = max(end - start, 1e-3)
+    step = dur / max(len(words), 1)
+    out, t = [], start
+    for w in words:
+        w_start = t
+        w_end = min(end, t + step)
+        out.append({"text": w, "start": float(w_start), "end": float(w_end)})
+        t = w_end
+    return out
+
+# --------------
+
+
 # --- FIN NUEVAS ENV Y LOAD PARA PRO v2 ---
 
 
@@ -191,7 +255,12 @@ app.add_middleware(
 
 # ### Load models once at startup ==================================
 print(f"Cargando modelo Whisper: {WHISPER_MODEL_NAME} en {WHISPER_DEVICE}")
-asr_model = whisper.load_model(WHISPER_MODEL_NAME, device=WHISPER_DEVICE)
+if asr_backend == "whisper":
+    asr_model = whisper.load_model(WHISPER_MODEL_NAME, device=WHISPER_DEVICE)
+else:
+    # Mantener Whisper estándar en CPU para los endpoints que lo usan,
+    # mientras Faster-Whisper queda en GPU para karaoke/word-timestamps.
+    asr_model = whisper.load_model(WHISPER_MODEL_NAME, device="cpu")
 
 # Emociones en texto en inglés (baseline, HuggingFace)
 print("Cargando modelo de emociones en texto (inglés)...")
@@ -203,24 +272,12 @@ emotion_en_classifier = pipeline(
 )
 
 # Emociones en audio (SER)
-print("Cargando modelo de emociones en audio (SER)...")
-try:
-    audio_emotion_classifier = pipeline(
-        "audio-classification",
-        model="superb/wav2vec2-base-superb-er",
-        device=DEVICE,  # intenta GPU si hay
-    )
-except torch.cuda.OutOfMemoryError:
-    try:
-        torch.cuda.empty_cache()
-    except Exception:
-        pass
-    audio_emotion_classifier = pipeline(
-        "audio-classification",
-        model="superb/wav2vec2-base-superb-er",
-        device=-1,  # fallback CPU
-    )
-    print("⚠️ SER cargado en CPU por falta de memoria GPU")
+print("Cargando modelo de emociones en audio (SER) en CPU…")
+audio_emotion_classifier = pipeline(
+    "audio-classification",
+    model="superb/wav2vec2-base-superb-er",
+    device=-1,  # CPU fijo para no tocar VRAM
+)
 
 # Sentimiento multilingüe
 print("Cargando modelo de sentimiento multilingüe...")
@@ -536,9 +593,7 @@ async def transcribe_pysentimiento_emotion_es(file: UploadFile = File(...)):
             total_weight += weight
 
             for e in emotions:
-                global_scores[e]["label"] = (
-                    global_scores.get(e["label"], 0.0) + e["score"] * weight
-                )
+                global_scores[e["label"]] += e["score"] * weight  # fix
 
             segment_emotions.append(
                 {
@@ -795,5 +850,108 @@ async def transcribe_emotion_text_pro_v2(file: UploadFile = File(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PRO v2 text error: {str(e)}")
+    finally:
+        delete_temp_file(tmp_path)
+
+
+# /transcribe/karaoke ==============================
+@app.post("/transcribe/karaoke")
+async def transcribe_karaoke(file: UploadFile = File(...)):
+    """
+    Devuelve transcripción + segmentos + palabras con timestamps.
+    - Si USE_FASTER_WHISPER=1 -> word timestamps reales (faster-whisper)
+    - Si no -> fallback aproximado repartiendo tiempo entre palabras.
+    """
+    ensure_audio(file)
+    tmp_path = save_temp_file(file, suffix=".wav")
+    try:
+        if asr_backend == "faster-whisper":
+            # Faster-Whisper: timestamps a nivel de palabra
+            segments, info = faster_model.transcribe(
+                tmp_path,
+                language="es",
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 200},
+                word_timestamps=True,
+            )
+            all_segments = []
+            global_text = []
+            for seg in segments:
+                seg_text = seg.text.strip()
+                global_text.append(seg_text)
+                words = []
+                if seg.words:
+                    for w in seg.words:
+                        words.append(
+                            {
+                                "text": w.word.strip(),
+                                "start": (
+                                    float(w.start)
+                                    if w.start is not None
+                                    else float(seg.start)
+                                ),
+                                "end": (
+                                    float(w.end)
+                                    if w.end is not None
+                                    else float(seg.end)
+                                ),
+                            }
+                        )
+                else:
+                    words = split_words_with_timestamps(
+                        seg_text, float(seg.start), float(seg.end)
+                    )
+
+                all_segments.append(
+                    {
+                        "start": float(seg.start),
+                        "end": float(seg.end),
+                        "text": seg_text,
+                        "words": words,
+                    }
+                )
+
+            return {
+                "backend": "faster-whisper",
+                "transcription": " ".join(global_text).strip(),
+                "segments": all_segments,
+                "duration": (
+                    float(info.duration)
+                    if hasattr(info, "duration") and info.duration
+                    else None
+                ),
+                "language": info.language if hasattr(info, "language") else "es",
+            }
+
+        else:
+            # Whisper estándar: sin word timestamps nativos -> fallback
+            result = asr_model.transcribe(tmp_path, language="es")
+            text = result.get("text", "").strip()
+            segments = result.get("segments", []) or []
+            all_segments = []
+            for s in segments:
+                st = float(s.get("start", 0.0))
+                en = float(s.get("end", 0.0))
+                seg_text = (s.get("text") or "").strip()
+                words = split_words_with_timestamps(seg_text, st, en)
+                all_segments.append(
+                    {
+                        "start": st,
+                        "end": en,
+                        "text": seg_text,
+                        "words": words,
+                    }
+                )
+
+            return {
+                "backend": "whisper",
+                "transcription": text,
+                "segments": all_segments,
+                "duration": None,
+                "language": "es",
+            }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Karaoke error: {str(e)}")
     finally:
         delete_temp_file(tmp_path)

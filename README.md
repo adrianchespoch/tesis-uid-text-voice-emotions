@@ -163,6 +163,27 @@ uvicorn app.main:app --host 0.0.0.0 --port 7777 --workers 1
 
 ```
 
+<!-- - -->
+```sh
+pip install faster-whisper
+
+
+# Recomendado para karaoke real:
+pip install faster-whisper
+
+export USE_FASTER_WHISPER=1
+export FASTER_WHISPER_MODEL=medium
+export WHISPER_DEVICE=cuda
+uvicorn app.main:app --host 0.0.0.0 --port 7777 --workers 1
+
+```
+
+```
+```
+
+```
+```
+
 ```
 ```
 
